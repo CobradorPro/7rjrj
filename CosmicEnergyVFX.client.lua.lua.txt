@@ -1,0 +1,2416 @@
+--[[
+	==================================================================
+	 TEARDROP — COSMIC ENERGY VFX  (versão unificada, 1 LocalScript)
+	 Local: StarterPlayer > StarterPlayerScripts > LocalScript
+	------------------------------------------------------------------
+	 Tecla G .............. dispara o efeito à frente do personagem
+	 Painel (esquerda) .... ativar, repetir, pausar, parar, limpar,
+	                        qualidade, escala, intensidade, chão demo,
+	                        modo escuro, bloom e diagnóstico
+	 Outros LocalScripts podem usar a API via:
+	   local API = shared.CosmicEnergyAPI
+	   local fx = API.Create({ Position = Vector3.new(0, 8, 0), Scale = 1 })
+	   fx:Play()
+	 Efeito LOCAL (cosmético): não replica para outros jogadores.
+	==================================================================
+]]
+
+------------------------------------------------------------------
+-- SERVIÇOS
+------------------------------------------------------------------
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local TweenService     = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting         = game:GetService("Lighting")
+local Workspace        = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+
+------------------------------------------------------------------
+-- CONFIGURAÇÃO GERAL
+------------------------------------------------------------------
+local CONFIG = {
+	BaseDuration     = 8,      -- duração de referência da linha do tempo (s)
+	SpawnKey         = Enum.KeyCode.G,
+	SpawnDistance    = 26,     -- studs à frente do personagem
+	SpawnHeight      = 7,      -- studs acima do personagem
+	MaxActiveEffects = 6,      -- efeitos simultâneos neste cliente
+	MaxBoltPartsGlobal = 260,  -- partes de raio somando todos os efeitos
+	MaxRocksGlobal   = 120,
+
+	-- Faixas válidas das opções: { mínimo, máximo, padrão }
+	Ranges = {
+		Scale     = { 0.25, 4, 1 },
+		Intensity = { 0, 2, 1 },
+		Duration  = { 2, 30, 8 },
+	},
+
+	Core = {
+		MaxHotSize     = 1.6,
+		PulseFrequency = 7,
+		PulseAmplitude = 0.16,
+		RingRadius     = 2.3,
+		EyeRatio       = 0.5,
+		FlareLength    = 10,
+		UnstableJitter = 0.12,
+	},
+
+	Ribbon = {
+		MinRadius = 2.2, MaxRadius = 6.2,
+		MinSpeed  = 0.7, MaxSpeed  = 2.6,
+		MinWidth  = 0.35, MaxWidth = 1.7,
+		MinArc    = 100, MaxArc    = 200, -- graus
+		Wobble    = 0.35,
+	},
+
+	Filament = {
+		Width = 0.09,
+		MinSpeed = 2.5, MaxSpeed = 5,
+	},
+
+	Lightning = {
+		MinLife = 0.05, MaxLife = 0.15,
+		Width = 0.07,
+		MinLength = 2.5, MaxLength = 9,
+		Jitter = 0.5,
+		BaseRate = 14,         -- raios por segundo na intensidade máxima
+		BranchFactor = 0.45,
+		FlickerRate = 30,
+	},
+
+	Rocks = {
+		MinSize = 0.35, MaxSize = 1.5,
+		SpawnRadius = 7,
+		MaxRaycast = 60,
+	},
+
+	Shockwave = { Radius = 26, Duration = 0.7 },
+
+	Camera = {
+		Shake = true, MaxShake = 0.55, Radius = 90,
+		Flash = true, FlashAlpha = 0.35,
+	},
+
+	Bloom = { Intensity = 0.9, Size = 30, Threshold = 0.85 },
+
+	-- Texturas nativas do Roblox (não exigem upload)
+	Textures = {
+		Spark = "rbxasset://textures/particles/sparkles_main.dds",
+		Fire  = "rbxasset://textures/particles/fire_main.dds",
+		Smoke = "rbxasset://textures/particles/smoke_main.dds",
+	},
+
+	-- ÁUDIO: placeholders. Coloque "rbxassetid://SEU_ID" para ativar.
+	-- Vazio = sem som (o efeito funciona normalmente).
+	Audio = {
+		Gather    = { SoundId = "", Volume = 0.6, PlaybackSpeed = 1 },
+		Tension   = { SoundId = "", Volume = 0.5, PlaybackSpeed = 1 },
+		Eruption  = { SoundId = "", Volume = 1.0, PlaybackSpeed = 1 },
+		Discharge = { SoundId = "", Volume = 0.25, PlaybackSpeed = 1.2 },
+		Dissipate = { SoundId = "", Volume = 0.5, PlaybackSpeed = 1 },
+		RollOffMaxDistance = 250,
+		DischargeCooldown = 0.25,
+	},
+}
+
+------------------------------------------------------------------
+-- PRESETS DE QUALIDADE
+------------------------------------------------------------------
+local QUALITY = {
+	Low = {
+		Ribbons = 4, Filaments = 3, Motes = 6, Shells = 2, BeamSegments = 6,
+		MaxBolts = 4, LightningSegments = 5, BranchChance = 0.1, LightningMult = 0.4,
+		ParticleMult = 0.35, Rocks = 5, SpotLight = false, UpdateHz = 30, RingLayers = 1,
+	},
+	Medium = {
+		Ribbons = 7, Filaments = 5, Motes = 10, Shells = 3, BeamSegments = 10,
+		MaxBolts = 8, LightningSegments = 8, BranchChance = 0.2, LightningMult = 0.7,
+		ParticleMult = 0.65, Rocks = 10, SpotLight = false, UpdateHz = 60, RingLayers = 1,
+	},
+	High = {
+		Ribbons = 10, Filaments = 8, Motes = 16, Shells = 4, BeamSegments = 14,
+		MaxBolts = 14, LightningSegments = 11, BranchChance = 0.3, LightningMult = 1,
+		ParticleMult = 1, Rocks = 16, SpotLight = true, UpdateHz = 0, RingLayers = 2,
+	},
+	Ultra = {
+		Ribbons = 14, Filaments = 12, Motes = 24, Shells = 5, BeamSegments = 20,
+		MaxBolts = 22, LightningSegments = 15, BranchChance = 0.38, LightningMult = 1.4,
+		ParticleMult = 1.5, Rocks = 26, SpotLight = true, UpdateHz = 0, RingLayers = 2,
+	},
+}
+local QUALITY_ORDER = { "Low", "Medium", "High", "Ultra" }
+local globalQuality = "High"
+
+------------------------------------------------------------------
+-- PALETA
+------------------------------------------------------------------
+local DEFAULT_PALETTE = {
+	Hot       = Color3.fromRGB(235, 245, 255),
+	Highlight = Color3.fromRGB(140, 210, 255),
+	Electric  = Color3.fromRGB(70, 130, 255),
+	Royal     = Color3.fromRGB(40, 60, 210),
+	Indigo    = Color3.fromRGB(75, 40, 190),
+	Violet    = Color3.fromRGB(140, 80, 255),
+	Haze      = Color3.fromRGB(95, 60, 170),
+	Void      = Color3.fromRGB(8, 6, 20),
+	Rock      = Color3.fromRGB(70, 60, 75),
+}
+
+-- Gera paleta a partir de uma cor base, preservando as relações de matiz
+local function paletteFromBase(base)
+	local refH = DEFAULT_PALETTE.Electric:ToHSV()
+	local baseH = base:ToHSV()
+	local delta = baseH - refH
+	local out = {}
+	for key, color in pairs(DEFAULT_PALETTE) do
+		if key == "Void" or key == "Rock" or key == "Hot" then
+			out[key] = color
+		else
+			local h, s, v = color:ToHSV()
+			out[key] = Color3.fromHSV((h + delta) % 1, s, v)
+		end
+	end
+	out.Electric = base
+	out.Hot = DEFAULT_PALETTE.Hot:Lerp(base, 0.12)
+	return out
+end
+
+local function resolvePalette(options)
+	local palette
+	if typeof(options.Color) == "Color3" then
+		palette = paletteFromBase(options.Color)
+	else
+		palette = table.clone(DEFAULT_PALETTE)
+	end
+	if type(options.Palette) == "table" then
+		for key, value in pairs(options.Palette) do
+			if typeof(value) == "Color3" then
+				palette[key] = value
+			end
+		end
+	end
+	return palette
+end
+
+------------------------------------------------------------------
+-- MATEMÁTICA
+------------------------------------------------------------------
+local TAU = math.pi * 2
+
+local function lerp(a, b, t)
+	return a + (b - a) * t
+end
+
+local function clamp01(x)
+	return math.clamp(x, 0, 1)
+end
+
+local function dampFactor(speed, dt)
+	return 1 - math.exp(-speed * dt)
+end
+
+local Ease = {}
+function Ease.linear(t) return t end
+function Ease.inQuad(t) return t * t end
+function Ease.outQuad(t) return 1 - (1 - t) * (1 - t) end
+function Ease.inOutQuad(t)
+	if t < 0.5 then return 2 * t * t end
+	return 1 - (-2 * t + 2) ^ 2 / 2
+end
+function Ease.inCubic(t) return t * t * t end
+function Ease.outCubic(t) return 1 - (1 - t) ^ 3 end
+function Ease.inOutSine(t) return -(math.cos(math.pi * t) - 1) / 2 end
+function Ease.outExpo(t)
+	if t >= 1 then return 1 end
+	return 1 - 2 ^ (-10 * t)
+end
+function Ease.outBack(t)
+	local c1, c3 = 1.70158, 2.70158
+	return 1 + c3 * (t - 1) ^ 3 + c1 * (t - 1) ^ 2
+end
+
+-- Base ortonormal perpendicular a um eixo
+local function basis(axis)
+	if axis.Magnitude < 1e-6 then
+		axis = Vector3.yAxis
+	else
+		axis = axis.Unit
+	end
+	local helper = math.abs(axis.Y) < 0.95 and Vector3.yAxis or Vector3.xAxis
+	local u = axis:Cross(helper).Unit
+	local v = axis:Cross(u).Unit
+	return u, v
+end
+
+-- Vetor de ruído suave em [-~1, ~1]
+local function noiseVector(t, seed)
+	return Vector3.new(
+		math.noise(t, seed * 0.731, 11.3),
+		math.noise(t, seed * 0.731, 47.9),
+		math.noise(t, seed * 0.731, 83.1)
+	) * 1.8
+end
+
+-- Pulso composto (várias senoides), saída em [0,1]
+local function compositePulse(time, frequency, seed)
+	local v = math.sin(time * frequency + seed) * 0.55
+		+ math.sin(time * frequency * 2.31 + seed * 1.7) * 0.3
+		+ math.sin(time * frequency * 5.17 + seed * 2.9) * 0.15
+	return v * 0.5 + 0.5
+end
+
+local function cubicPoint(p0, p1, p2, p3, t)
+	local u = 1 - t
+	return p0 * (u * u * u) + p1 * (3 * u * u * t) + p2 * (3 * u * t * t) + p3 * (t * t * t)
+end
+
+------------------------------------------------------------------
+-- SEQUÊNCIAS
+------------------------------------------------------------------
+local function colorSeq(...)
+	local colors = { ... }
+	if #colors == 1 then
+		return ColorSequence.new(colors[1])
+	end
+	local keypoints = {}
+	for i, c in ipairs(colors) do
+		keypoints[i] = ColorSequenceKeypoint.new((i - 1) / (#colors - 1), c)
+	end
+	return ColorSequence.new(keypoints)
+end
+
+local function numSeq(list)
+	local keypoints = {}
+	for i, p in ipairs(list) do
+		keypoints[i] = NumberSequenceKeypoint.new(p[1], p[2], p[3] or 0)
+	end
+	return NumberSequence.new(keypoints)
+end
+
+local function scaleNumSeq(sequence, factor)
+	local keypoints = {}
+	for i, kp in ipairs(sequence.Keypoints) do
+		keypoints[i] = NumberSequenceKeypoint.new(kp.Time, kp.Value * factor, kp.Envelope * factor)
+	end
+	return NumberSequence.new(keypoints)
+end
+
+local function taperSeq(alpha)
+	return NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(0.18, alpha),
+		NumberSequenceKeypoint.new(0.75, alpha),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+end
+
+local function energyColor(palette, t)
+	t = clamp01(t)
+	local stops = {
+		{ 0, palette.Haze }, { 0.3, palette.Indigo }, { 0.55, palette.Electric },
+		{ 0.8, palette.Highlight }, { 1, palette.Hot },
+	}
+	for i = 1, #stops - 1 do
+		local a, b = stops[i], stops[i + 1]
+		if t <= b[1] then
+			return a[2]:Lerp(b[2], (t - a[1]) / (b[1] - a[1]))
+		end
+	end
+	return stops[#stops][2]
+end
+
+------------------------------------------------------------------
+-- BEAM: Bézier cúbica -> Attachments + CurveSize
+------------------------------------------------------------------
+local function applyBezier(beam, a0, a1, p0, p1, p2, p3)
+	local c0 = p1 - p0
+	local c1 = p2 - p3
+	local chord = p3 - p0
+	local fallback = chord.Magnitude > 1e-4 and chord.Unit or Vector3.xAxis
+	local r1 = c0.Magnitude > 1e-4 and c0.Unit or fallback
+	local r2 = c1.Magnitude > 1e-4 and c1.Unit or -fallback
+	local up1 = basis(r1)
+	local up2 = basis(r2)
+	a0.WorldCFrame = CFrame.fromMatrix(p0, r1, up1)
+	a1.WorldCFrame = CFrame.fromMatrix(p3, r2, up2)
+	beam.CurveSize0 = c0.Magnitude
+	beam.CurveSize1 = -c1.Magnitude
+end
+
+-- Arco elíptico (raios rA/rB) de a0 até a1, com desvio orgânico nos controles
+local function updateArcBeam(item, center, axis, rA, rB, a0, a1, wobble, t)
+	local u, v = basis(axis)
+	local kf = 4 / 3 * math.tan((a1 - a0) / 4)
+	local function at(a)
+		return center + u * (math.cos(a) * rA) + v * (math.sin(a) * rB)
+	end
+	local function tangent(a)
+		return u * (-math.sin(a) * rA) + v * (math.cos(a) * rB)
+	end
+	local p0, p3 = at(a0), at(a1)
+	local p1 = p0 + tangent(a0) * kf
+	local p2 = p3 - tangent(a1) * kf
+	if wobble > 0 then
+		p1 += noiseVector(t, item.seed) * wobble * rA
+		p2 += noiseVector(t + 3.7, item.seed) * wobble * rA
+	end
+	item.p0, item.p1, item.p2, item.p3 = p0, p1, p2, p3
+	applyBezier(item.beam, item.a0, item.a1, p0, p1, p2, p3)
+end
+
+------------------------------------------------------------------
+-- LINHA DO TEMPO: canais por quadros-chave (em segundos-base, 0..8)
+-- Cada chave: { tempo, valor, easing (opcional, usado ao chegar nela) }
+------------------------------------------------------------------
+local CHANNELS = {
+	coreSize     = { {0,0}, {0.8,0.25,"outQuad"}, {2.0,0.9,"inOutQuad"}, {3.0,0.35,"inCubic"}, {4.0,0.3}, {4.35,6,"outBack"}, {5.0,5.5,"outQuad"}, {6.5,5.2}, {8.0,0,"inQuad"} },
+	coreHeat     = { {0,0}, {0.8,0.5}, {2,0.7}, {3,1}, {4.3,1}, {5,0.55}, {6.5,0.5}, {8,0} },
+	haze         = { {0,0}, {0.8,0.35}, {2,0.5}, {3,0.25}, {4,0.2}, {4.5,0.9}, {6.5,0.8}, {8,0} },
+	filaments    = { {0,0}, {0.8,0}, {1.2,1}, {2,1}, {3,0.4}, {4,0}, {4.3,0}, {5,0.8}, {6.5,0.8}, {7.5,0} },
+	ribbons      = { {0,0}, {4,0}, {4.25,1,"outQuad"}, {6.5,1}, {7.6,0,"inQuad"} },
+	ribbonRadius = { {0,0.4}, {2,0.6}, {3,0.2}, {4,0.15}, {4.4,1.1,"outBack"}, {5,1}, {6.5,1.05}, {8,1.6,"outQuad"} },
+	spin         = { {0,0.6}, {2,1.2}, {3,2.6,"inQuad"}, {4,3.2}, {4.5,1.8}, {6.5,1.2}, {8,0.6} },
+	inward       = { {0,0.2}, {0.8,0.5}, {2,1}, {3,1}, {3.2,0}, {8,0} },
+	sparks       = { {0,0.2}, {0.8,0.5}, {2,0.6}, {3,0.4}, {4,0.6}, {4.2,1}, {6.5,0.9}, {8,0} },
+	flares       = { {0,0}, {3,0}, {3.2,1,"outExpo"}, {3.9,1}, {4.2,0.6}, {4.6,0}, {8,0} },
+	lightning    = { {0,0}, {1,0.15}, {2,0.3}, {3,0.6}, {4,0.8}, {4.2,1}, {6.5,0.8}, {7.5,0.1}, {8,0} },
+	shells       = { {0,0}, {4,0}, {4.2,1,"outQuad"}, {6.5,1}, {7.8,0,"inQuad"} },
+	ring         = { {0,0}, {4.6,0}, {5.2,1}, {6.5,1}, {7.4,0} },
+	eye          = { {0,0}, {4.8,0}, {5.3,1}, {6.5,1}, {7.2,0} },
+	streaks      = { {0,0}, {4,0}, {4.1,1}, {5,0.6}, {6.5,0.4}, {7,0} },
+	embers       = { {0,0}, {4,0.2}, {5,0.8}, {6.5,1}, {8,0} },
+	bigWisps     = { {0,0}, {4.2,0}, {5,1}, {6.5,0.8}, {7.5,0} },
+	residual     = { {0,0}, {6.5,0}, {7,1}, {7.8,0.6}, {8,0} },
+	motes        = { {0,0}, {0.8,0.3}, {2,1}, {3,1}, {4,0.6}, {4.5,1}, {6.5,1}, {8,0} },
+	moteRadius   = { {0,1.8}, {2,1.2}, {3,0.5,"inCubic"}, {4,0.4}, {4.5,1.6,"outBack"}, {6.5,1.8}, {8,3} },
+	light        = { {0,0}, {0.8,0.4}, {2,0.8}, {3,1.4}, {4,1.8}, {4.2,3.5}, {5,2}, {6.5,1.6}, {8,0} },
+}
+
+local EVENTS = {
+	{ Time = 0.0, Name = "Gather" },
+	{ Time = 2.0, Name = "Tension" },
+	{ Time = 4.0, Name = "Eruption" },
+	{ Time = 6.5, Name = "Dissipate" },
+}
+
+local PHASES = {
+	{ Name = "Dormant",     Start = 0.0, Finish = 0.8 },
+	{ Name = "Formation",   Start = 0.8, Finish = 2.0 },
+	{ Name = "Convergence", Start = 2.0, Finish = 3.0 },
+	{ Name = "Unstable",    Start = 3.0, Finish = 4.0 },
+	{ Name = "Eruption",    Start = 4.0, Finish = 5.0 },
+	{ Name = "Peak",        Start = 5.0, Finish = 6.5 },
+	{ Name = "Dissipation", Start = 6.5, Finish = 8.0 },
+}
+
+local function sampleChannel(keys, b)
+	if b <= keys[1][1] then
+		return keys[1][2]
+	end
+	for i = 1, #keys - 1 do
+		local k0, k1 = keys[i], keys[i + 1]
+		if b < k1[1] then
+			local t = (b - k0[1]) / (k1[1] - k0[1])
+			local easeFn = Ease[k1[3] or "inOutSine"] or Ease.inOutSine
+			return lerp(k0[2], k1[2], easeFn(t))
+		end
+	end
+	return keys[#keys][2]
+end
+
+------------------------------------------------------------------
+-- PASTA DE RUNTIME E CRIAÇÃO DE PARTES
+------------------------------------------------------------------
+local runtimeFolder
+local poolFolder
+local boltPool = {}
+local boltPartsInUse = 0
+local rocksActive = 0
+local HIDDEN_CFRAME = CFrame.new(0, -10000, 0)
+
+local function getRoot()
+	if runtimeFolder and runtimeFolder.Parent then
+		return runtimeFolder
+	end
+	runtimeFolder = Instance.new("Folder")
+	runtimeFolder.Name = "CosmicEnergyVFX_Runtime"
+	runtimeFolder.Parent = Workspace
+	poolFolder = nil
+	return runtimeFolder
+end
+
+local function getPoolFolder()
+	if poolFolder and poolFolder.Parent then
+		return poolFolder
+	end
+	poolFolder = Instance.new("Folder")
+	poolFolder.Name = "BoltPool"
+	poolFolder.Parent = getRoot()
+	boltPool = {}
+	return poolFolder
+end
+
+local function makePart(props, parent)
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	if props.Shape then
+		p.Shape = props.Shape
+	end
+	for key, value in pairs(props) do
+		if key ~= "Shape" then
+			p[key] = value
+		end
+	end
+	p.Parent = parent
+	return p
+end
+
+local function tween(instance, duration, props, style, direction)
+	local t = TweenService:Create(instance, TweenInfo.new(duration, style or Enum.EasingStyle.Quad, direction or Enum.EasingDirection.Out), props)
+	t:Play()
+	return t
+end
+
+------------------------------------------------------------------
+-- POOL DE PARTES DE RAIO (compartilhado entre efeitos)
+------------------------------------------------------------------
+local function acquireBoltPart()
+	if boltPartsInUse >= CONFIG.MaxBoltPartsGlobal then
+		return nil
+	end
+	local folder = getPoolFolder()
+	local part = table.remove(boltPool)
+	if not part or not part.Parent then
+		part = makePart({
+			Name = "Bolt",
+			Material = Enum.Material.Neon,
+			Size = Vector3.new(0.1, 0.1, 1),
+			Transparency = 1,
+			CFrame = HIDDEN_CFRAME,
+		}, folder)
+	end
+	boltPartsInUse += 1
+	return part
+end
+
+local function releaseBoltPart(part)
+	boltPartsInUse = math.max(0, boltPartsInUse - 1)
+	if not part or not part.Parent then
+		return
+	end
+	if #boltPool >= 200 then
+		part:Destroy()
+		return
+	end
+	part.Transparency = 1
+	part.CFrame = HIDDEN_CFRAME
+	table.insert(boltPool, part)
+end
+
+local function flushBoltPool()
+	for _, part in ipairs(boltPool) do
+		if part.Parent then
+			part:Destroy()
+		end
+	end
+	boltPool = {}
+end
+
+------------------------------------------------------------------
+-- CÂMERA: TREMOR E CLARÃO (globais, somente cliente)
+------------------------------------------------------------------
+local shakeAmount = 0
+local flashFrame -- criado pela interface
+
+local function distanceFactor(origin)
+	local cam = Workspace.CurrentCamera
+	if not cam then
+		return 0
+	end
+	local d = (cam.CFrame.Position - origin).Magnitude
+	return 1 - math.clamp(d / CONFIG.Camera.Radius, 0, 1)
+end
+
+local function addShake(amount, origin)
+	if not CONFIG.Camera.Shake then
+		return
+	end
+	local f = distanceFactor(origin)
+	shakeAmount = math.max(shakeAmount, math.min(amount, CONFIG.Camera.MaxShake) * f)
+end
+
+local function screenFlash(color, alpha, duration, origin)
+	if not CONFIG.Camera.Flash or not flashFrame then
+		return
+	end
+	local f = distanceFactor(origin)
+	if f <= 0 then
+		return
+	end
+	flashFrame.BackgroundColor3 = color
+	flashFrame.BackgroundTransparency = 1 - math.clamp(alpha * f, 0, CONFIG.Camera.FlashAlpha)
+	tween(flashFrame, duration, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quint)
+end
+
+RunService:BindToRenderStep("CosmicEnergyShake", Enum.RenderPriority.Camera.Value + 1, function(dt)
+	if shakeAmount > 0.001 then
+		local cam = Workspace.CurrentCamera
+		if cam then
+			local t = os.clock()
+			local offset = Vector3.new(math.noise(t * 25, 1.3), math.noise(t * 25, 7.1), 0) * shakeAmount
+			local roll = CFrame.Angles(0, 0, math.noise(t * 20, 3.3) * shakeAmount * 0.03)
+			cam.CFrame = cam.CFrame * CFrame.new(offset) * roll
+		end
+		shakeAmount *= math.exp(-6 * dt)
+	else
+		shakeAmount = 0
+	end
+end)
+
+------------------------------------------------------------------
+-- BLOOM OPCIONAL (cria o próprio efeito; nunca altera os existentes)
+------------------------------------------------------------------
+local bloomEffect
+
+local function setBloomEnabled(enabled)
+	if enabled then
+		if not bloomEffect or not bloomEffect.Parent then
+			bloomEffect = Instance.new("BloomEffect")
+			bloomEffect.Name = "CosmicEnergyBloom"
+			bloomEffect.Intensity = CONFIG.Bloom.Intensity * 0.4
+			bloomEffect.Size = CONFIG.Bloom.Size
+			bloomEffect.Threshold = CONFIG.Bloom.Threshold
+			bloomEffect.Parent = Lighting
+		end
+	elseif bloomEffect then
+		bloomEffect:Destroy()
+		bloomEffect = nil
+	end
+end
+
+local function pulseBloom()
+	if not bloomEffect or not bloomEffect.Parent then
+		return
+	end
+	local bloom = bloomEffect
+	tween(bloom, 0.15, { Intensity = CONFIG.Bloom.Intensity * 1.8 })
+	task.delay(0.35, function()
+		if bloom.Parent then
+			tween(bloom, 0.8, { Intensity = CONFIG.Bloom.Intensity * 0.4 })
+		end
+	end)
+end
+
+------------------------------------------------------------------
+-- CLASSE DO EFEITO
+------------------------------------------------------------------
+local Effect = {}
+Effect.__index = Effect
+
+local activeEffects = {}   -- efeitos construídos e em atualização
+local allEffects = {}      -- todos os criados (para "Limpar tudo")
+local effectCounter = 0
+
+local function countActive()
+	local n = 0
+	for _ in pairs(activeEffects) do
+		n += 1
+	end
+	return n
+end
+
+local function clampOption(name, value)
+	local range = CONFIG.Ranges[name]
+	if type(value) ~= "number" or value ~= value then
+		return range[3]
+	end
+	return math.clamp(value, range[1], range[2])
+end
+
+local function newEffect(options)
+	options = options or {}
+	effectCounter += 1
+	local self = setmetatable({}, Effect)
+	self.id = effectCounter
+	self.position = typeof(options.Position) == "Vector3" and options.Position or Vector3.new(0, 5, 0)
+	if typeof(options.Attachment) == "Instance" and options.Attachment:IsA("Attachment") then
+		self.attachment = options.Attachment
+	end
+	self.scale = clampOption("Scale", options.Scale)
+	self.intensity = clampOption("Intensity", options.Intensity)
+	self.duration = clampOption("Duration", options.Duration)
+	self.qualityName = (type(options.Quality) == "string" and QUALITY[options.Quality]) and options.Quality or globalQuality
+	self.q = QUALITY[self.qualityName]
+	self.palette = resolvePalette(options)
+	self.groundAlign = options.GroundAlign ~= false
+	self.cameraShake = options.CameraShake ~= false
+	self.screenFlash = options.ScreenFlash ~= false
+	self.sounds = options.Sounds ~= false
+	self.autoDestroy = options.AutoDestroy ~= false
+	self.loop = options.Loop == true
+	self.seed = type(options.Seed) == "number" and options.Seed or math.random(1, 2147483646)
+	self.rng = Random.new(self.seed)
+	self.state = "Idle"
+	self.built = false
+	self.time = 0
+	self.b = 0
+	self.fade = 1
+	self.endTimer = 0
+	self.visAcc = 0
+	self.boltAcc = 0
+	self.lastDischarge = 0
+	self.fired = {}
+	self.ch = {}
+	self.threads = {}
+	self.bolts = {}
+	self.rocks = {}
+	self.finishedCallbacks = {}
+	self.currentCenter = self.position
+	self.coreRadius = 0.1
+	allEffects[self] = true
+	return self
+end
+
+function Effect:_center()
+	if self.attachment and self.attachment.Parent then
+		return self.attachment.WorldPosition
+	end
+	return self.position
+end
+
+function Effect:_destroyLater(instance, delay)
+	local thread = task.delay(delay, function()
+		if instance and instance.Parent then
+			instance:Destroy()
+		end
+	end)
+	table.insert(self.threads, thread)
+end
+
+function Effect:_newBeam(props)
+	local a0 = Instance.new("Attachment")
+	a0.Parent = self.anchor
+	local a1 = Instance.new("Attachment")
+	a1.Parent = self.anchor
+	local beam = Instance.new("Beam")
+	beam.Attachment0 = a0
+	beam.Attachment1 = a1
+	beam.FaceCamera = true
+	beam.LightEmission = 1
+	beam.LightInfluence = 0
+	beam.Segments = self.q.BeamSegments
+	beam.Enabled = false
+	for key, value in pairs(props) do
+		beam[key] = value
+	end
+	beam.Parent = self.anchor
+	return { beam = beam, a0 = a0, a1 = a1, seed = self.rng:NextNumber(0, 1000), lastAlpha = -1 }
+end
+
+function Effect:_setBeamAlpha(item, alpha)
+	if math.abs(item.lastAlpha - alpha) > 0.02 then
+		item.lastAlpha = alpha
+		item.beam.Transparency = taperSeq(alpha)
+	end
+end
+
+function Effect:_addEmitter(parent, channel, baseRate, props)
+	local emitter = Instance.new("ParticleEmitter")
+	for key, value in pairs(props) do
+		emitter[key] = value
+	end
+	emitter.Rate = 0
+	emitter.Parent = parent
+	table.insert(self.emitters, {
+		emitter = emitter,
+		channel = channel,
+		baseRate = baseRate,
+		baseSize = emitter.Size,
+		baseSpeed = emitter.Speed,
+		baseAccel = emitter.Acceleration,
+	})
+	return emitter
+end
+
+------------------------------------------------------------------
+-- CONSTRUÇÃO
+------------------------------------------------------------------
+function Effect:_buildCore()
+	local P = self.palette
+	local folder = self.folder
+	local center = self.currentCenter
+
+	self.hotCore = makePart({
+		Name = "HotCore", Shape = Enum.PartType.Ball, Material = Enum.Material.Neon,
+		Color = P.Hot, Size = Vector3.one * 0.1, Transparency = 1, CFrame = CFrame.new(center),
+	}, folder)
+
+	self.glowCore = makePart({
+		Name = "GlowCore", Shape = Enum.PartType.Ball, Material = Enum.Material.ForceField,
+		Color = P.Electric, Size = Vector3.one * 0.2, Transparency = 1, CFrame = CFrame.new(center),
+	}, folder)
+
+	self.hazeSphere = makePart({
+		Name = "Haze", Shape = Enum.PartType.Ball, Material = Enum.Material.ForceField,
+		Color = P.Violet, Size = Vector3.one * 0.5, Transparency = 1, CFrame = CFrame.new(center),
+	}, folder)
+
+	self.eye = makePart({
+		Name = "VoidEye", Shape = Enum.PartType.Ball, Material = Enum.Material.SmoothPlastic,
+		Color = P.Void, Size = Vector3.one * 0.1, Transparency = 1, CFrame = CFrame.new(center),
+	}, folder)
+
+	-- Cascas turbulentas (elipsoides via SpecialMesh)
+	self.shells = {}
+	local n = self.q.Shells
+	for i = 1, n do
+		local useForceField = (i % 2 == 0)
+		local part = makePart({
+			Name = "Shell" .. i, Size = Vector3.one,
+			Material = useForceField and Enum.Material.ForceField or Enum.Material.Neon,
+			Color = energyColor(P, 0.35 + 0.4 * ((i - 1) / math.max(n - 1, 1))),
+			Transparency = 1, CFrame = CFrame.new(center),
+		}, folder)
+		local mesh = Instance.new("SpecialMesh")
+		mesh.MeshType = Enum.MeshType.Sphere
+		mesh.Scale = Vector3.one * 0.1
+		mesh.Parent = part
+		table.insert(self.shells, {
+			part = part,
+			mesh = mesh,
+			axis = self.rng:NextUnitVector(),
+			speed = self.rng:NextNumber(-1.5, 1.5),
+			seed = self.rng:NextNumber(0, 100),
+			sizeMul = lerp(0.65, 1.15, (i - 1) / math.max(n - 1, 1)),
+			alpha = useForceField and 0.9 or lerp(0.35, 0.15, (i - 1) / math.max(n - 1, 1)),
+			colorPhase = self.rng:NextNumber(0, TAU),
+		})
+	end
+end
+
+function Effect:_buildRibbons()
+	local P = self.palette
+	local R = CONFIG.Ribbon
+	self.ribbons = {}
+	for _ = 1, self.q.Ribbons do
+		local item = self:_newBeam({
+			Color = colorSeq(P.Highlight, P.Electric, P.Violet, P.Haze),
+			Brightness = 2.5,
+		})
+		item.axis = self.rng:NextUnitVector()
+		item.precessAxis = self.rng:NextUnitVector()
+		item.precessSpeed = self.rng:NextNumber(0.2, 0.9) * (self.rng:NextNumber() < 0.5 and -1 or 1)
+		item.radius = lerp(R.MinRadius, R.MaxRadius, self.rng:NextNumber() ^ 0.8)
+		item.ellipse = self.rng:NextNumber(0.55, 1)
+		item.speed = self.rng:NextNumber(R.MinSpeed, R.MaxSpeed) * (self.rng:NextNumber() < 0.5 and -1 or 1)
+		item.angle = self.rng:NextNumber(0, TAU)
+		item.arc = math.rad(self.rng:NextNumber(R.MinArc, R.MaxArc))
+		item.width = self.rng:NextNumber(R.MinWidth, R.MaxWidth)
+		item.alphaBase = self.rng:NextNumber(0.05, 0.35)
+		table.insert(self.ribbons, item)
+	end
+
+	self.filaments = {}
+	local F = CONFIG.Filament
+	for _ = 1, self.q.Filaments do
+		local item = self:_newBeam({
+			Color = colorSeq(P.Hot, P.Highlight, P.Electric),
+			Brightness = 4,
+		})
+		item.axis = self.rng:NextUnitVector()
+		item.precessAxis = self.rng:NextUnitVector()
+		item.precessSpeed = self.rng:NextNumber(0.5, 1.6) * (self.rng:NextNumber() < 0.5 and -1 or 1)
+		item.radiusMul = self.rng:NextNumber(0.75, 1.35)
+		item.ellipse = self.rng:NextNumber(0.4, 1)
+		item.speed = self.rng:NextNumber(F.MinSpeed, F.MaxSpeed) * (self.rng:NextNumber() < 0.5 and -1 or 1)
+		item.angle = self.rng:NextNumber(0, TAU)
+		item.arc = math.rad(self.rng:NextNumber(60, 140))
+		item.width = F.Width * self.rng:NextNumber(0.7, 1.4)
+		table.insert(self.filaments, item)
+	end
+end
+
+function Effect:_buildRingAndFlares()
+	local P = self.palette
+	self.ring = {}
+	for layer = 1, self.q.RingLayers do
+		for i = 1, 4 do
+			local item = self:_newBeam({
+				Color = layer == 1 and colorSeq(P.Hot, P.Highlight) or colorSeq(P.Violet, P.Electric),
+				Brightness = layer == 1 and 4 or 2,
+			})
+			item.layer = layer
+			item.index = i
+			table.insert(self.ring, item)
+		end
+	end
+
+	self.flares = {}
+	for i = 1, 4 do
+		local item = self:_newBeam({
+			Color = colorSeq(P.Hot, P.Highlight, P.Electric),
+			Brightness = 4,
+			Transparency = numSeq({ { 0, 0 }, { 1, 1 } }),
+		})
+		item.index = i
+		table.insert(self.flares, item)
+	end
+end
+
+function Effect:_buildMotes()
+	local P = self.palette
+	self.motes = {}
+	for i = 1, self.q.Motes do
+		local part = makePart({
+			Name = "Mote" .. i, Shape = Enum.PartType.Ball, Material = Enum.Material.Neon,
+			Color = self.rng:NextNumber() < 0.5 and P.Highlight or P.Hot,
+			Size = Vector3.one * 0.22, Transparency = 1, CFrame = CFrame.new(self.currentCenter),
+		}, self.folder)
+		local a0 = Instance.new("Attachment")
+		a0.Position = Vector3.new(0, 0.12 * self.scale, 0)
+		a0.Parent = part
+		local a1 = Instance.new("Attachment")
+		a1.Position = Vector3.new(0, -0.12 * self.scale, 0)
+		a1.Parent = part
+		local trail = Instance.new("Trail")
+		trail.Attachment0 = a0
+		trail.Attachment1 = a1
+		trail.Color = colorSeq(P.Hot, P.Electric, P.Violet)
+		trail.Transparency = numSeq({ { 0, 0.1 }, { 0.6, 0.6 }, { 1, 1 } })
+		trail.WidthScale = numSeq({ { 0, 1 }, { 1, 0 } })
+		trail.LightEmission = 1
+		trail.Lifetime = 0.35
+		trail.MinLength = 0.05
+		trail.FaceCamera = true
+		trail.Enabled = false
+		trail.Parent = part
+		table.insert(self.motes, {
+			part = part, trail = trail, a0 = a0, a1 = a1,
+			axis = self.rng:NextUnitVector(),
+			precessAxis = self.rng:NextUnitVector(),
+			precessSpeed = self.rng:NextNumber(0.3, 1.2),
+			radiusMul = self.rng:NextNumber(0.7, 1.4),
+			ellipse = self.rng:NextNumber(0.5, 1),
+			speed = self.rng:NextNumber(1.5, 3.5) * (self.rng:NextNumber() < 0.5 and -1 or 1),
+			angle = self.rng:NextNumber(0, TAU),
+			seed = self.rng:NextNumber(0, 1000),
+		})
+	end
+end
+
+function Effect:_buildParticles()
+	local P = self.palette
+	local T = CONFIG.Textures
+	self.emitters = {}
+
+	self.volume = makePart({
+		Name = "EmitterVolume", Shape = Enum.PartType.Ball, Transparency = 1,
+		Size = Vector3.one * 2, CFrame = CFrame.new(self.currentCenter),
+	}, self.folder)
+
+	self.centerAtt = Instance.new("Attachment")
+	self.centerAtt.Parent = self.anchor
+	self.burstAtt = Instance.new("Attachment")
+	self.burstAtt.Parent = self.anchor
+
+	-- 1. Faíscas ambientes
+	self:_addEmitter(self.volume, "sparks", 25, {
+		Texture = T.Spark, Color = colorSeq(P.Hot, P.Highlight, P.Electric),
+		LightEmission = 1, LightInfluence = 0,
+		Size = numSeq({ { 0, 0.25 }, { 0.5, 0.35 }, { 1, 0 } }),
+		Transparency = numSeq({ { 0, 0.2 }, { 1, 1 } }),
+		Lifetime = NumberRange.new(0.5, 1.1), Speed = NumberRange.new(0.5, 2.5),
+		SpreadAngle = Vector2.new(180, 180), RotSpeed = NumberRange.new(-180, 180),
+		Shape = Enum.ParticleEmitterShape.Sphere, ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume,
+	})
+
+	-- 2. Partículas convergindo para o centro
+	self.inwardEmitter = self:_addEmitter(self.volume, "inward", 60, {
+		Texture = T.Spark, Color = colorSeq(P.Highlight, P.Electric, P.Hot),
+		LightEmission = 1, LightInfluence = 0,
+		Size = numSeq({ { 0, 0.15 }, { 1, 0.3 } }),
+		Transparency = numSeq({ { 0, 1 }, { 0.3, 0.2 }, { 1, 0 } }),
+		Squash = numSeq({ { 0, -1.5 }, { 1, -1.5 } }),
+		Orientation = Enum.ParticleOrientation.VelocityParallel,
+		Lifetime = NumberRange.new(0.5, 0.7), Speed = NumberRange.new(4, 6),
+		Shape = Enum.ParticleEmitterShape.Sphere, ShapeStyle = Enum.ParticleEmitterShapeStyle.Surface,
+		ShapeInOut = Enum.ParticleEmitterShapeInOut.Inward,
+	})
+
+	-- 4. Rastros rápidos para fora
+	self.streakEmitter = self:_addEmitter(self.centerAtt, "streaks", 40, {
+		Texture = T.Spark, Color = colorSeq(P.Hot, P.Highlight, P.Violet),
+		LightEmission = 1, LightInfluence = 0,
+		Size = numSeq({ { 0, 0.35 }, { 1, 0.1 } }),
+		Transparency = numSeq({ { 0, 0 }, { 0.7, 0.3 }, { 1, 1 } }),
+		Squash = numSeq({ { 0, -2.5 }, { 1, -2.5 } }),
+		Orientation = Enum.ParticleOrientation.VelocityParallel,
+		Lifetime = NumberRange.new(0.25, 0.5), Speed = NumberRange.new(40, 70),
+		SpreadAngle = Vector2.new(180, 180), Drag = 3,
+	})
+
+	-- 5. Brasas lentas flutuando
+	self:_addEmitter(self.volume, "embers", 12, {
+		Texture = T.Spark, Color = colorSeq(P.Highlight, P.Violet),
+		LightEmission = 1, LightInfluence = 0,
+		Size = numSeq({ { 0, 0.2 }, { 0.5, 0.3 }, { 1, 0 } }),
+		Transparency = numSeq({ { 0, 1 }, { 0.2, 0.3 }, { 1, 1 } }),
+		Lifetime = NumberRange.new(2, 3.5), Speed = NumberRange.new(0.3, 1.2),
+		SpreadAngle = Vector2.new(180, 180), Acceleration = Vector3.new(0, 1.5, 0),
+		Shape = Enum.ParticleEmitterShape.Sphere, ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume,
+	})
+
+	-- 6. Partículas elétricas de vida curta
+	self:_addEmitter(self.centerAtt, "lightning", 30, {
+		Texture = T.Spark, Color = colorSeq(P.Hot, P.Highlight),
+		LightEmission = 1, LightInfluence = 0,
+		Size = numSeq({ { 0, 0.5 }, { 1, 0 } }),
+		Lifetime = NumberRange.new(0.08, 0.2), Speed = NumberRange.new(8, 20),
+		SpreadAngle = Vector2.new(180, 180), RotSpeed = NumberRange.new(-720, 720),
+		Rotation = NumberRange.new(0, 360),
+	})
+
+	-- 7. Grandes nuvens e fragmentos no pico
+	self:_addEmitter(self.volume, "bigWisps", 10, {
+		Texture = T.Smoke, Color = colorSeq(P.Electric, P.Violet, P.Indigo),
+		LightEmission = 0.7, LightInfluence = 0,
+		Size = numSeq({ { 0, 3 }, { 1, 7 } }),
+		Transparency = numSeq({ { 0, 1 }, { 0.3, 0.7 }, { 1, 1 } }),
+		Lifetime = NumberRange.new(1, 1.6), Speed = NumberRange.new(1, 3),
+		SpreadAngle = Vector2.new(180, 180), RotSpeed = NumberRange.new(-60, 60),
+		Rotation = NumberRange.new(0, 360),
+		Shape = Enum.ParticleEmitterShape.Sphere, ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume,
+	})
+
+	-- 8. Resíduos que somem aos poucos
+	self:_addEmitter(self.volume, "residual", 30, {
+		Texture = T.Spark, Color = colorSeq(P.Highlight, P.Violet, P.Haze),
+		LightEmission = 1, LightInfluence = 0,
+		Size = numSeq({ { 0, 0.3 }, { 1, 0 } }),
+		Transparency = numSeq({ { 0, 0.3 }, { 1, 1 } }),
+		Lifetime = NumberRange.new(1.5, 2.5), Speed = NumberRange.new(0.5, 2),
+		SpreadAngle = Vector2.new(180, 180), Drag = 1,
+		Shape = Enum.ParticleEmitterShape.Sphere, ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume,
+	})
+
+	-- Névoa violeta
+	self:_addEmitter(self.volume, "haze", 8, {
+		Texture = T.Smoke, Color = colorSeq(P.Violet, P.Indigo, P.Haze),
+		LightEmission = 0.5, LightInfluence = 0,
+		Size = numSeq({ { 0, 2 }, { 1, 4 } }),
+		Transparency = numSeq({ { 0, 1 }, { 0.4, 0.8 }, { 1, 1 } }),
+		Lifetime = NumberRange.new(1.2, 2), Speed = NumberRange.new(0.2, 0.8),
+		SpreadAngle = Vector2.new(180, 180), RotSpeed = NumberRange.new(-30, 30),
+		Rotation = NumberRange.new(0, 360),
+		Shape = Enum.ParticleEmitterShape.Sphere, ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume,
+	})
+
+	-- Emissor de rajadas (Emit manual: erupção e quebra das fitas)
+	self.burstEmitter = Instance.new("ParticleEmitter")
+	self.burstEmitter.Texture = T.Spark
+	self.burstEmitter.Color = colorSeq(P.Hot, P.Highlight, P.Violet)
+	self.burstEmitter.LightEmission = 1
+	self.burstEmitter.LightInfluence = 0
+	self.burstEmitter.Size = numSeq({ { 0, 0.4 }, { 1, 0 } })
+	self.burstEmitter.Transparency = numSeq({ { 0, 0.1 }, { 1, 1 } })
+	self.burstEmitter.Lifetime = NumberRange.new(0.6, 1.4)
+	self.burstEmitter.Speed = NumberRange.new(1, 5)
+	self.burstEmitter.SpreadAngle = Vector2.new(180, 180)
+	self.burstEmitter.Drag = 2
+	self.burstEmitter.Rate = 0
+	self.burstEmitter.Parent = self.burstAtt
+	self.burstBaseSize = self.burstEmitter.Size
+	self.burstBaseSpeed = self.burstEmitter.Speed
+end
+
+function Effect:_buildLights()
+	local P = self.palette
+	self.light = Instance.new("PointLight")
+	self.light.Color = P.Electric
+	self.light.Brightness = 0
+	self.light.Range = 12
+	self.light.Shadows = false
+	self.light.Parent = self.anchor
+
+	if self.q.SpotLight then
+		self.spot = Instance.new("SpotLight")
+		self.spot.Face = Enum.NormalId.Bottom
+		self.spot.Angle = 100
+		self.spot.Color = P.Violet
+		self.spot.Brightness = 0
+		self.spot.Range = 30
+		self.spot.Shadows = false
+		self.spot.Parent = self.anchor
+	end
+end
+
+function Effect:_build()
+	local folder = Instance.new("Folder")
+	folder.Name = "CosmicEnergy_" .. self.id
+	folder.Parent = getRoot()
+	self.folder = folder
+	self.currentCenter = self:_center()
+
+	self.anchor = makePart({
+		Name = "Anchor", Size = Vector3.one * 0.2, Transparency = 1,
+		CFrame = CFrame.new(self.currentCenter),
+	}, folder)
+
+	self:_buildCore()
+	self:_buildRibbons()
+	self:_buildRingAndFlares()
+	self:_buildMotes()
+	self:_buildParticles()
+	self:_buildLights()
+	self:_applyScaleToInstances()
+	self.built = true
+end
+
+function Effect:_applyScaleToInstances()
+	if not self.emitters then
+		return
+	end
+	local s = self.scale
+	for _, e in ipairs(self.emitters) do
+		e.emitter.Size = scaleNumSeq(e.baseSize, s)
+		e.emitter.Speed = NumberRange.new(e.baseSpeed.Min * s, e.baseSpeed.Max * s)
+		e.emitter.Acceleration = e.baseAccel * s
+	end
+	if self.burstEmitter then
+		self.burstEmitter.Size = scaleNumSeq(self.burstBaseSize, s)
+		self.burstEmitter.Speed = NumberRange.new(self.burstBaseSpeed.Min * s, self.burstBaseSpeed.Max * s)
+	end
+	if self.motes then
+		for _, m in ipairs(self.motes) do
+			m.a0.Position = Vector3.new(0, 0.12 * s, 0)
+			m.a1.Position = Vector3.new(0, -0.12 * s, 0)
+		end
+	end
+end
+
+------------------------------------------------------------------
+-- DESMONTAGEM
+------------------------------------------------------------------
+function Effect:_teardown()
+	for _, bolt in ipairs(self.bolts) do
+		for _, part in ipairs(bolt.parts) do
+			releaseBoltPart(part)
+		end
+	end
+	self.bolts = {}
+	for _, rock in ipairs(self.rocks) do
+		if rock.part.Parent then
+			rock.part:Destroy()
+		end
+		rocksActive = math.max(0, rocksActive - 1)
+	end
+	self.rocks = {}
+	for _, thread in ipairs(self.threads) do
+		pcall(task.cancel, thread)
+	end
+	self.threads = {}
+	if self.folder then
+		self.folder:Destroy()
+		self.folder = nil
+	end
+	self.anchor = nil
+	self.emitters = nil
+	self.ribbons = nil
+	self.filaments = nil
+	self.ring = nil
+	self.flares = nil
+	self.motes = nil
+	self.shells = nil
+	self.built = false
+	activeEffects[self] = nil
+end
+
+------------------------------------------------------------------
+-- RAIOS
+------------------------------------------------------------------
+function Effect:_buildBoltPath(bolt, a, b, segments, bulge, center, depth)
+	local dir = b - a
+	local length = dir.Magnitude
+	if length < 0.05 then
+		return
+	end
+	local rng = self.rng
+	local P = self.palette
+	local u, v = basis(dir.Unit)
+	local mid = (a + b) / 2
+	local outward = mid - center
+	outward = outward.Magnitude > 1e-3 and outward.Unit or u
+	local width = CONFIG.Lightning.Width * self.scale * (depth == 0 and 1 or 0.6)
+	local jitter = CONFIG.Lightning.Jitter
+	local prev = a
+	for i = 1, segments do
+		local t = i / segments
+		local point
+		if i == segments then
+			point = b
+		else
+			local falloff = math.sin(t * math.pi)
+			point = a + dir * t + outward * bulge * falloff
+				+ (u * rng:NextNumber(-1, 1) + v * rng:NextNumber(-1, 1)) * jitter * length * 0.12 * falloff
+		end
+		local segment = point - prev
+		local segLength = segment.Magnitude
+		if segLength > 0.01 then
+			local part = acquireBoltPart()
+			if not part then
+				return
+			end
+			part.Size = Vector3.new(width, width, segLength)
+			part.CFrame = CFrame.lookAt((prev + point) / 2, point)
+			part.Color = P.Hot:Lerp(P.Highlight, rng:NextNumber())
+			part.Transparency = 0
+			table.insert(bolt.parts, part)
+		end
+		if depth == 0 and i < segments and rng:NextNumber() < self.q.BranchChance then
+			local branchDir = (dir.Unit + rng:NextUnitVector() * 0.9).Unit
+			local branchLength = length * CONFIG.Lightning.BranchFactor * rng:NextNumber(0.5, 1)
+			self:_buildBoltPath(bolt, point, point + branchDir * branchLength, math.max(2, math.floor(segments / 2)), 0, center, 1)
+		end
+		prev = point
+	end
+end
+
+function Effect:_spawnBolt()
+	if #self.bolts >= self.q.MaxBolts then
+		return
+	end
+	local L = CONFIG.Lightning
+	local rng = self.rng
+	local center = self.currentCenter
+	local s = self.scale
+	local shellR = math.max(self.coreRadius, 0.5 * s)
+	local a, b, bulge
+	if self.b < 4 or rng:NextNumber() < 0.55 then
+		-- raio radial saindo do núcleo
+		local dir = rng:NextUnitVector()
+		local reach = rng:NextNumber(L.MinLength, L.MaxLength) * s * (self.b < 4 and 0.5 or 1)
+		a = center + dir * shellR * 0.4
+		b = center + dir * (shellR + reach)
+		bulge = 0
+	else
+		-- filamento elétrico percorrendo a superfície da casca
+		local d1 = rng:NextUnitVector()
+		local d2 = (d1 + rng:NextUnitVector() * 0.9).Unit
+		a = center + d1 * shellR
+		b = center + d2 * shellR
+		bulge = shellR * 0.35
+	end
+	local bolt = { parts = {}, life = 0, flicker = 0 }
+	bolt.maxLife = rng:NextNumber(L.MinLife, L.MaxLife)
+	bolt.life = bolt.maxLife
+	self:_buildBoltPath(bolt, a, b, self.q.LightningSegments, bulge, center, 0)
+	if #bolt.parts == 0 then
+		return
+	end
+	table.insert(self.bolts, bolt)
+	if os.clock() - self.lastDischarge > CONFIG.Audio.DischargeCooldown and rng:NextNumber() < 0.3 then
+		self.lastDischarge = os.clock()
+		self:_playSound("Discharge")
+	end
+end
+
+function Effect:_updateBolts(dt)
+	local rng = self.rng
+	for i = #self.bolts, 1, -1 do
+		local bolt = self.bolts[i]
+		bolt.life -= dt
+		if bolt.life <= 0 then
+			for _, part in ipairs(bolt.parts) do
+				releaseBoltPart(part)
+			end
+			table.remove(self.bolts, i)
+		else
+			bolt.flicker -= dt
+			if bolt.flicker <= 0 then
+				bolt.flicker = 1 / CONFIG.Lightning.FlickerRate
+				local lifeAlpha = bolt.life / bolt.maxLife
+				for _, part in ipairs(bolt.parts) do
+					part.Transparency = clamp01(rng:NextNumber(0, 0.6) + (1 - lifeAlpha) * 0.4)
+				end
+			end
+		end
+	end
+end
+
+------------------------------------------------------------------
+-- FRAGMENTOS DE ROCHA (interação com o chão)
+------------------------------------------------------------------
+function Effect:_spawnRocks()
+	if not self.groundAlign then
+		return
+	end
+	local center = self.currentCenter
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local exclude = { getRoot() }
+	if player.Character then
+		table.insert(exclude, player.Character)
+	end
+	params.FilterDescendantsInstances = exclude
+	local hit = Workspace:Raycast(center, Vector3.new(0, -CONFIG.Rocks.MaxRaycast * self.scale, 0), params)
+	if not hit then
+		self.groundPos = nil
+		return
+	end
+	self.groundPos = hit.Position
+	local P = self.palette
+	local color = P.Rock
+	if hit.Instance and not hit.Instance:IsA("Terrain") then
+		color = hit.Instance.Color:Lerp(P.Rock, 0.45)
+	end
+	local rng = self.rng
+	local s = self.scale
+	local R = CONFIG.Rocks
+	for _ = 1, self.q.Rocks do
+		if rocksActive >= CONFIG.MaxRocksGlobal then
+			break
+		end
+		rocksActive += 1
+		local size = rng:NextNumber(R.MinSize, R.MaxSize) * s
+		local angle = rng:NextNumber(0, TAU)
+		local dist = R.SpawnRadius * s * math.sqrt(rng:NextNumber())
+		local offset = Vector3.new(math.cos(angle) * dist, 0, math.sin(angle) * dist)
+		local startPos = hit.Position + offset
+		local part = makePart({
+			Name = "Rock",
+			Size = Vector3.new(size * rng:NextNumber(0.7, 1.3), size * rng:NextNumber(0.6, 1.1), size * rng:NextNumber(0.7, 1.3)),
+			Material = Enum.Material.Slate,
+			Color = color,
+			Transparency = 0,
+			CFrame = CFrame.new(startPos),
+		}, self.folder)
+		table.insert(self.rocks, {
+			part = part,
+			pos = startPos,
+			vel = Vector3.new(0, rng:NextNumber(14, 26) * s, 0),
+			spinAxis = rng:NextUnitVector(),
+			spinSpeed = rng:NextNumber(-3, 3),
+			spin = rng:NextNumber(0, TAU),
+			orbitAngle = angle,
+			orbitRadius = math.max(2 * s, dist * rng:NextNumber(0.4, 0.9)),
+			orbitDir = rng:NextNumber() < 0.5 and -1 or 1,
+			heightOffset = rng:NextNumber(-2.5, 1.5) * s,
+			falling = false,
+			dead = false,
+		})
+	end
+
+	-- Poeira no chão
+	local dust = Instance.new("Attachment")
+	dust.Parent = self.anchor
+	dust.WorldPosition = hit.Position
+	local dustEmitter = Instance.new("ParticleEmitter")
+	dustEmitter.Texture = CONFIG.Textures.Smoke
+	dustEmitter.Color = colorSeq(color, P.Haze)
+	dustEmitter.LightEmission = 0.2
+	dustEmitter.Size = numSeq({ { 0, 2 * s }, { 1, 6 * s } })
+	dustEmitter.Transparency = numSeq({ { 0, 0.5 }, { 1, 1 } })
+	dustEmitter.Lifetime = NumberRange.new(0.8, 1.5)
+	dustEmitter.Speed = NumberRange.new(10 * s, 20 * s)
+	dustEmitter.SpreadAngle = Vector2.new(80, 5)
+	dustEmitter.EmissionDirection = Enum.NormalId.Front
+	dustEmitter.Drag = 4
+	dustEmitter.Rate = 0
+	dustEmitter.Parent = dust
+	for i = 1, 8 do
+		dust.WorldCFrame = CFrame.new(hit.Position) * CFrame.Angles(0, i * TAU / 8, 0)
+		dustEmitter:Emit(math.ceil(3 * self.q.ParticleMult))
+	end
+end
+
+function Effect:_updateRocks(dt)
+	local center = self.currentCenter
+	for i = #self.rocks, 1, -1 do
+		local rock = self.rocks[i]
+		if not rock.part.Parent then
+			rock.dead = true
+		end
+		if rock.dead then
+			rocksActive = math.max(0, rocksActive - 1)
+			table.remove(self.rocks, i)
+		else
+			if not rock.falling then
+				rock.orbitAngle += 0.35 * rock.orbitDir * dt
+				local target = center + Vector3.new(
+					math.cos(rock.orbitAngle) * rock.orbitRadius,
+					rock.heightOffset + math.sin(self.time * 1.3 + rock.spin) * 0.4 * self.scale,
+					math.sin(rock.orbitAngle) * rock.orbitRadius
+				)
+				rock.vel += (target - rock.pos) * 4 * dt
+				rock.vel *= math.exp(-2.2 * dt)
+			else
+				rock.vel += Vector3.new(0, -70, 0) * dt
+				rock.part.Transparency = math.min(1, rock.part.Transparency + dt * 0.6)
+				local floorY = self.groundPos and self.groundPos.Y or (center.Y - 40)
+				if rock.part.Transparency >= 1 or rock.pos.Y < floorY - 2 then
+					rock.part:Destroy()
+					rock.dead = true
+				end
+			end
+			if not rock.dead then
+				rock.pos += rock.vel * dt
+				rock.spin += rock.spinSpeed * dt
+				rock.part.CFrame = CFrame.new(rock.pos) * CFrame.fromAxisAngle(rock.spinAxis, rock.spin)
+			end
+		end
+	end
+end
+
+------------------------------------------------------------------
+-- ONDA DE CHOQUE
+------------------------------------------------------------------
+function Effect:_shockwave()
+	local P = self.palette
+	local s = self.scale
+	local center = self.currentCenter
+	local W = CONFIG.Shockwave
+
+	local sphere = makePart({
+		Name = "ShockSphere", Shape = Enum.PartType.Ball, Material = Enum.Material.ForceField,
+		Color = P.Highlight, Size = Vector3.one * 2 * s, Transparency = 0, CFrame = CFrame.new(center),
+	}, self.folder)
+	tween(sphere, W.Duration * 0.8, { Size = Vector3.one * W.Radius * 0.7 * s, Transparency = 1 }, Enum.EasingStyle.Quint)
+	self:_destroyLater(sphere, W.Duration)
+
+	local cam = Workspace.CurrentCamera
+	local facing = cam and (cam.CFrame.Position - center) or Vector3.zAxis
+	local airRing = makePart({
+		Name = "ShockRing", Shape = Enum.PartType.Cylinder, Material = Enum.Material.Neon,
+		Color = P.Electric, Size = Vector3.new(0.15, 3 * s, 3 * s), Transparency = 0.1,
+		CFrame = CFrame.lookAt(center, center + facing) * CFrame.Angles(0, math.rad(90), 0),
+	}, self.folder)
+	tween(airRing, W.Duration, { Size = Vector3.new(0.05, W.Radius * s, W.Radius * s), Transparency = 1 }, Enum.EasingStyle.Quint)
+	self:_destroyLater(airRing, W.Duration + 0.1)
+
+	if self.groundPos then
+		local groundRing = makePart({
+			Name = "GroundRing", Shape = Enum.PartType.Cylinder, Material = Enum.Material.Neon,
+			Color = P.Hot, Size = Vector3.new(0.2, 2 * s, 2 * s), Transparency = 0,
+			CFrame = CFrame.new(self.groundPos + Vector3.new(0, 0.1, 0)) * CFrame.Angles(0, 0, math.rad(90)),
+		}, self.folder)
+		tween(groundRing, W.Duration * 1.2, {
+			Size = Vector3.new(0.05, W.Radius * 1.3 * s, W.Radius * 1.3 * s),
+			Transparency = 1, Color = P.Violet,
+		}, Enum.EasingStyle.Quint)
+		self:_destroyLater(groundRing, W.Duration * 1.2 + 0.1)
+	end
+end
+
+------------------------------------------------------------------
+-- ÁUDIO OPCIONAL
+------------------------------------------------------------------
+function Effect:_playSound(name)
+	if not self.sounds or not self.anchor then
+		return
+	end
+	local cfg = CONFIG.Audio[name]
+	if type(cfg) ~= "table" or cfg.SoundId == "" then
+		return
+	end
+	local sound = Instance.new("Sound")
+	sound.SoundId = cfg.SoundId
+	sound.Volume = cfg.Volume * math.clamp(self.intensity, 0.3, 1.5)
+	sound.PlaybackSpeed = cfg.PlaybackSpeed
+	sound.RollOffMaxDistance = CONFIG.Audio.RollOffMaxDistance
+	sound.Parent = self.anchor
+	sound:Play()
+	sound.Ended:Once(function()
+		sound:Destroy()
+	end)
+	self:_destroyLater(sound, 15)
+end
+
+------------------------------------------------------------------
+-- EVENTOS DA LINHA DO TEMPO
+------------------------------------------------------------------
+function Effect:_onEvent(name)
+	local P = self.palette
+	local center = self.currentCenter
+	if name == "Gather" then
+		self:_playSound("Gather")
+	elseif name == "Tension" then
+		self:_playSound("Tension")
+	elseif name == "Eruption" then
+		self:_playSound("Eruption")
+		self:_spawnRocks()
+		self:_shockwave()
+		local mult = self.q.ParticleMult * self.intensity
+		self.streakEmitter:Emit(math.ceil(60 * mult))
+		self.burstAtt.WorldPosition = center
+		self.burstEmitter:Emit(math.ceil(40 * mult))
+		for _ = 1, math.ceil(4 * self.q.LightningMult) do
+			self:_spawnBolt()
+		end
+		if self.cameraShake then
+			addShake(0.55 * self.intensity * self.scale, center)
+		end
+		if self.screenFlash then
+			screenFlash(P.Highlight, 0.35 * self.intensity, 0.45, center)
+		end
+		pulseBloom()
+	elseif name == "Dissipate" then
+		self:_playSound("Dissipate")
+		-- fitas se quebram em partículas
+		local perPoint = math.max(1, math.floor(3 * self.q.ParticleMult))
+		for _, r in ipairs(self.ribbons) do
+			if r.p0 and r.beam.Enabled then
+				for k = 0, 4 do
+					self.burstAtt.WorldPosition = cubicPoint(r.p0, r.p1, r.p2, r.p3, k / 4)
+					self.burstEmitter:Emit(perPoint)
+				end
+			end
+		end
+		for _, rock in ipairs(self.rocks) do
+			rock.falling = true
+			local out = rock.pos - center
+			out = Vector3.new(out.X, 0, out.Z)
+			if out.Magnitude > 1e-3 then
+				rock.vel = out.Unit * 6 * self.scale + Vector3.new(0, 4, 0)
+			end
+		end
+		if self.cameraShake then
+			addShake(0.15 * self.intensity, center)
+		end
+	end
+end
+
+------------------------------------------------------------------
+-- ATUALIZAÇÃO VISUAL
+------------------------------------------------------------------
+function Effect:_updateCore(ch, center, pulse, I)
+	local P = self.palette
+	local s = self.scale
+	local t = self.time
+	local C = CONFIG.Core
+
+	local coreSize = ch.coreSize * s * (1 + (pulse - 0.5) * 2 * C.PulseAmplitude)
+	self.coreRadius = coreSize * 0.5
+
+	local hotSize = math.min(coreSize * 0.45, C.MaxHotSize * s) + 0.15 * s * ch.coreHeat
+	self.hotCore.Size = Vector3.one * math.max(hotSize, 0.05)
+	self.hotCore.CFrame = CFrame.new(center)
+	self.hotCore.Transparency = 1 - clamp01(ch.coreHeat * (1 - ch.eye * 0.85) * I)
+
+	local glowSize = coreSize * 0.75 + 0.6 * s * ch.coreHeat
+	self.glowCore.Size = Vector3.one * math.max(glowSize, 0.05)
+	self.glowCore.CFrame = CFrame.new(center) * CFrame.Angles(t * 0.7, t * 1.1, 0)
+	self.glowCore.Transparency = 1 - clamp01(0.6 * ch.coreHeat * I)
+	self.glowCore.Color = energyColor(P, 0.55 + 0.35 * pulse)
+
+	local hazeSize = (coreSize * 1.25 + 2 * s) * (0.9 + 0.1 * pulse)
+	self.hazeSphere.Size = Vector3.one * math.max(hazeSize, 0.05)
+	self.hazeSphere.CFrame = CFrame.new(center) * CFrame.Angles(0, -t * 0.4, t * 0.25)
+	self.hazeSphere.Transparency = 1 - clamp01(0.35 * ch.haze * I)
+
+	local eyeSize = C.RingRadius * s * C.EyeRatio * 2 * ch.eye
+	self.eye.Size = Vector3.one * math.max(eyeSize, 0.05)
+	self.eye.CFrame = CFrame.new(center)
+	self.eye.Transparency = 1 - clamp01(ch.eye * self.fade * 0.95)
+
+	for _, sh in ipairs(self.shells) do
+		local size = coreSize * sh.sizeMul
+		local nx = 1 + math.noise(t * 0.8, sh.seed, 0.3) * 0.35
+		local ny = 1 + math.noise(t * 0.8, sh.seed, 2.7) * 0.35
+		local nz = 1 + math.noise(t * 0.8, sh.seed, 5.1) * 0.35
+		sh.mesh.Scale = Vector3.new(size * nx, size * ny, size * nz)
+		local drift = noiseVector(t * 0.6, sh.seed) * 0.08 * size
+		sh.part.CFrame = CFrame.new(center + drift) * CFrame.fromAxisAngle(sh.axis, t * sh.speed)
+		sh.part.Transparency = 1 - clamp01(ch.shells * I * sh.alpha * (0.75 + 0.25 * pulse))
+		local colorT = 0.45 + 0.25 * math.sin(t * 1.7 + sh.colorPhase)
+		sh.part.Color = energyColor(P, colorT)
+	end
+end
+
+function Effect:_updateRibbons(ch, center, pulse, I, dt)
+	local s = self.scale
+	local t = self.time
+	local R = CONFIG.Ribbon
+	local spin = ch.spin
+
+	local ribbonVis = clamp01(ch.ribbons * I)
+	for _, r in ipairs(self.ribbons) do
+		r.angle += r.speed * spin * dt
+		local radius = r.radius * s * ch.ribbonRadius * (1 + math.noise(t * 0.6, r.seed, 1.1) * R.Wobble)
+		if ribbonVis < 0.01 or radius < 0.05 then
+			r.beam.Enabled = false
+		else
+			r.beam.Enabled = true
+			local axis = CFrame.fromAxisAngle(r.precessAxis, t * r.precessSpeed):VectorToWorldSpace(r.axis)
+			local arc = r.arc * (0.8 + 0.2 * math.sin(t * 1.3 + r.seed))
+			local lift = axis * math.sin(t * 0.9 + r.seed) * radius * 0.12
+			updateArcBeam(r, center + lift, axis, radius, radius * r.ellipse, r.angle, r.angle + arc, R.Wobble, t * 0.8)
+			r.beam.Width0 = r.width * s * (0.7 + 0.6 * pulse) * math.min(1, ch.ribbons * 1.5)
+			r.beam.Width1 = r.width * s * 0.2
+			self:_setBeamAlpha(r, 1 - (1 - r.alphaBase) * ribbonVis)
+		end
+	end
+
+	local filamentVis = clamp01(ch.filaments * I)
+	local baseRadius = (0.9 + ch.coreSize * 0.55) * s
+	for _, f in ipairs(self.filaments) do
+		f.angle += f.speed * spin * dt
+		if filamentVis < 0.01 then
+			f.beam.Enabled = false
+		else
+			f.beam.Enabled = true
+			local axis = CFrame.fromAxisAngle(f.precessAxis, t * f.precessSpeed):VectorToWorldSpace(f.axis)
+			local radius = baseRadius * f.radiusMul * (1 + math.noise(t * 1.4, f.seed, 4.2) * 0.25)
+			updateArcBeam(f, center, axis, radius, radius * f.ellipse, f.angle, f.angle + f.arc, 0.2, t * 1.5)
+			local flicker = 0.75 + 0.25 * math.noise(t * 12, f.seed)
+			f.beam.Width0 = f.width * s * flicker
+			f.beam.Width1 = f.width * s * 0.3
+			self:_setBeamAlpha(f, 1 - filamentVis * flicker)
+		end
+	end
+end
+
+function Effect:_updateRing(ch, center, pulse, I)
+	local s = self.scale
+	local t = self.time
+	local vis = clamp01(ch.ring * I)
+	local cam = Workspace.CurrentCamera
+	local view = cam and (cam.CFrame.Position - center) or Vector3.zAxis
+	local axis = view.Magnitude > 1e-3 and view.Unit or Vector3.zAxis
+	local ringR = CONFIG.Core.RingRadius * s * (0.85 + 0.15 * pulse) * (0.6 + 0.4 * ch.ring)
+	for _, seg in ipairs(self.ring) do
+		if vis < 0.01 then
+			seg.beam.Enabled = false
+		else
+			seg.beam.Enabled = true
+			local radius = seg.layer == 1 and ringR or ringR * 1.18
+			local speed = seg.layer == 1 and 1.8 or -1.1
+			local a0 = (seg.index - 1) * TAU / 4 + t * speed
+			local a1 = a0 + TAU / 4 + 0.05
+			updateArcBeam(seg, center, axis, radius, radius, a0, a1, 0, t)
+			local width = seg.layer == 1 and 0.3 * s or 0.7 * s
+			seg.beam.Width0 = width
+			seg.beam.Width1 = width
+			local base = seg.layer == 1 and 0.05 or 0.45
+			seg.beam.Transparency = NumberSequence.new(1 - (1 - base) * vis)
+		end
+	end
+end
+
+function Effect:_updateFlares(ch, center, I)
+	local s = self.scale
+	local t = self.time
+	local vis = clamp01(ch.flares * I)
+	local cam = Workspace.CurrentCamera
+	local up = cam and cam.CFrame.UpVector or Vector3.yAxis
+	local right = cam and cam.CFrame.RightVector or Vector3.xAxis
+	local dirs = {
+		up,
+		-up,
+		(up + right * 0.55).Unit,
+		(-up - right * 0.55).Unit,
+	}
+	for i, f in ipairs(self.flares) do
+		if vis < 0.01 then
+			f.beam.Enabled = false
+		else
+			f.beam.Enabled = true
+			local length = CONFIG.Core.FlareLength * s * vis * (i <= 2 and 1 or 0.55) * (0.85 + 0.3 * math.noise(t * 9, i))
+			f.a0.WorldPosition = center
+			f.a1.WorldPosition = center + dirs[i] * length
+			f.beam.CurveSize0 = 0
+			f.beam.CurveSize1 = 0
+			f.beam.Width0 = 0.4 * s * vis
+			f.beam.Width1 = 0
+			f.beam.Brightness = 3 + 4 * vis
+		end
+	end
+end
+
+function Effect:_updateMotes(ch, center, pulse, I, dt)
+	local s = self.scale
+	local t = self.time
+	local spin = ch.spin
+	local moteR = ch.moteRadius * s
+	local vis = clamp01(ch.motes * I)
+	for _, m in ipairs(self.motes) do
+		m.angle += m.speed * spin * dt
+		local axis = CFrame.fromAxisAngle(m.precessAxis, t * m.precessSpeed):VectorToWorldSpace(m.axis)
+		local u, v = basis(axis)
+		local radius = moteR * m.radiusMul * (1 + math.noise(t * 1.1, m.seed) * 0.3)
+		local pos = center
+			+ (u * math.cos(m.angle) + v * math.sin(m.angle) * m.ellipse) * radius
+			+ axis * math.sin(m.angle * 2 + m.seed) * radius * 0.2
+		m.part.CFrame = CFrame.new(pos)
+		m.part.Size = Vector3.one * 0.22 * s * (0.7 + 0.6 * pulse)
+		m.part.Transparency = 1 - vis
+		m.trail.Enabled = vis > 0.05
+	end
+end
+
+function Effect:_updateEmittersAndLights(ch, center, pulse, I)
+	local P = self.palette
+	local s = self.scale
+	local mult = self.q.ParticleMult * I
+	for _, e in ipairs(self.emitters) do
+		e.emitter.Rate = e.baseRate * (ch[e.channel] or 0) * mult
+	end
+
+	local volumeRadius = math.max(1 * s, ch.moteRadius * s * 2.2)
+	self.volume.Size = Vector3.one * volumeRadius
+	self.volume.CFrame = CFrame.new(center)
+	local inwardSpeed = (volumeRadius * 0.5) / 0.6
+	self.inwardEmitter.Speed = NumberRange.new(inwardSpeed * 0.85, inwardSpeed * 1.15)
+
+	self.light.Brightness = ch.light * I * (0.85 + 0.3 * pulse)
+	self.light.Range = math.clamp((10 + ch.coreSize * 5) * s, 6, 60)
+	self.light.Color = P.Electric:Lerp(P.Hot, math.clamp(ch.coreHeat - 0.5, 0, 0.5))
+	if self.spot then
+		self.spot.Brightness = ch.light * I * 0.8
+		self.spot.Range = math.clamp(30 * s, 10, 60)
+	end
+end
+
+function Effect:_updateVisuals(b, dt)
+	local ch = self.ch
+	for name, keys in pairs(CHANNELS) do
+		ch[name] = sampleChannel(keys, b)
+	end
+	local I = self.intensity * self.fade
+	local center = self:_center()
+	if ch.flares > 0.01 then
+		center += self.rng:NextUnitVector() * CONFIG.Core.UnstableJitter * self.scale * ch.flares
+	end
+	self.currentCenter = center
+	self.anchor.CFrame = CFrame.new(center)
+
+	local pulse = compositePulse(self.time, CONFIG.Core.PulseFrequency, self.seed % 100)
+	self:_updateCore(ch, center, pulse, I)
+	self:_updateRibbons(ch, center, pulse, I, dt)
+	self:_updateRing(ch, center, pulse, I)
+	self:_updateFlares(ch, center, I)
+	self:_updateMotes(ch, center, pulse, I, dt)
+	self:_updateEmittersAndLights(ch, center, pulse, I)
+end
+
+------------------------------------------------------------------
+-- PASSO PRINCIPAL
+------------------------------------------------------------------
+function Effect:_setEmittersTimeScale(value)
+	if not self.emitters then
+		return
+	end
+	for _, e in ipairs(self.emitters) do
+		e.emitter.TimeScale = value
+	end
+	if self.burstEmitter then
+		self.burstEmitter.TimeScale = value
+	end
+end
+
+function Effect:_disableEmission()
+	if not self.emitters then
+		return
+	end
+	for _, e in ipairs(self.emitters) do
+		e.emitter.Rate = 0
+	end
+	if self.motes then
+		for _, m in ipairs(self.motes) do
+			m.trail.Enabled = false
+			m.part.Transparency = 1
+		end
+	end
+end
+
+function Effect:_finish()
+	self:_teardown()
+	self.state = "Finished"
+	for _, callback in ipairs(self.finishedCallbacks) do
+		task.spawn(callback, self)
+	end
+	if self.autoDestroy then
+		self:Destroy()
+	end
+end
+
+function Effect:_step(dt)
+	if self.state == "Paused" or not self.built then
+		return
+	end
+
+	if self.state == "Ending" then
+		self.endTimer -= dt
+		self:_updateBolts(dt)
+		self:_updateRocks(dt)
+		if self.endTimer <= 0 then
+			self:_finish()
+		end
+		return
+	end
+
+	self.time += dt
+	local b = self.time * CONFIG.BaseDuration / self.duration
+	self.b = b
+
+	for _, event in ipairs(EVENTS) do
+		if b >= event.Time and not self.fired[event.Name] then
+			self.fired[event.Name] = true
+			self:_onEvent(event.Name)
+		end
+	end
+
+	if self.state == "Stopping" then
+		self.fade = math.max(0, self.fade - dt / 0.7)
+	end
+
+	-- visuais (com limite de Hz em qualidades baixas)
+	self.visAcc += dt
+	local hz = self.q.UpdateHz
+	if hz <= 0 or self.visAcc >= 1 / hz then
+		self:_updateVisuals(b, self.visAcc)
+		self.visAcc = 0
+	end
+
+	-- raios
+	local rate = CONFIG.Lightning.BaseRate * (self.ch.lightning or 0) * self.intensity * self.fade * self.q.LightningMult
+	self.boltAcc += rate * dt
+	while self.boltAcc >= 1 do
+		self.boltAcc -= 1
+		self:_spawnBolt()
+	end
+	self:_updateBolts(dt)
+	self:_updateRocks(dt)
+
+	-- condições de término
+	if self.state == "Stopping" and self.fade <= 0 then
+		self:_disableEmission()
+		self.state = "Ending"
+		self.endTimer = 1.6
+	elseif self.state == "Playing" and b >= CONFIG.BaseDuration then
+		if self.loop then
+			self.time = 0
+			self.fired = {}
+		else
+			self:_disableEmission()
+			self.state = "Ending"
+			self.endTimer = 2.6
+		end
+	end
+end
+
+------------------------------------------------------------------
+-- API PÚBLICA DO EFEITO
+------------------------------------------------------------------
+function Effect:Play()
+	if self.state == "Destroyed" then
+		return false
+	end
+	if self.built then
+		self:_teardown()
+	end
+	if countActive() >= CONFIG.MaxActiveEffects then
+		warn("[CosmicEnergyVFX] Limite de efeitos ativos atingido (" .. CONFIG.MaxActiveEffects .. ")")
+		return false
+	end
+	self.rng = Random.new(self.seed)
+	self.time = 0
+	self.b = 0
+	self.fade = 1
+	self.visAcc = 0
+	self.boltAcc = 0
+	self.fired = {}
+	self:_build()
+	self.state = "Playing"
+	activeEffects[self] = true
+	return true
+end
+
+function Effect:Pause()
+	if self.state == "Playing" or self.state == "Stopping" then
+		self.resumeState = self.state
+		self.state = "Paused"
+		self:_setEmittersTimeScale(0)
+	end
+end
+
+function Effect:Resume()
+	if self.state == "Paused" then
+		self.state = self.resumeState or "Playing"
+		self:_setEmittersTimeScale(1)
+	end
+end
+
+function Effect:Stop()
+	if self.state == "Paused" then
+		self:_setEmittersTimeScale(1)
+		self.state = "Playing"
+	end
+	if self.state == "Playing" then
+		self.state = "Stopping"
+	end
+end
+
+function Effect:Destroy()
+	if self.state == "Destroyed" then
+		return
+	end
+	self:_teardown()
+	self.state = "Destroyed"
+	self.finishedCallbacks = {}
+	allEffects[self] = nil
+end
+
+function Effect:SetScale(scale)
+	self.scale = clampOption("Scale", scale)
+	if self.built then
+		self:_applyScaleToInstances()
+	end
+end
+
+function Effect:SetIntensity(intensity)
+	self.intensity = clampOption("Intensity", intensity)
+end
+
+function Effect:SetPosition(position)
+	if typeof(position) == "Vector3" then
+		self.position = position
+		self.attachment = nil
+	end
+end
+
+function Effect:GetState()
+	return self.state
+end
+
+function Effect:GetPhase()
+	for _, phase in ipairs(PHASES) do
+		if self.b >= phase.Start and self.b < phase.Finish then
+			return phase.Name
+		end
+	end
+	return self.b >= CONFIG.BaseDuration and "Finished" or "Dormant"
+end
+
+function Effect:OnFinished(callback)
+	table.insert(self.finishedCallbacks, callback)
+	return function()
+		local index = table.find(self.finishedCallbacks, callback)
+		if index then
+			table.remove(self.finishedCallbacks, index)
+		end
+	end
+end
+
+------------------------------------------------------------------
+-- MÓDULO DA API
+------------------------------------------------------------------
+local CosmicEnergyAPI = {}
+
+--[[
+	CosmicEnergyAPI.Create(options) -> effect
+	options:
+	  Position    Vector3     posição do centro (padrão 0,5,0)
+	  Attachment  Attachment  opcional; o efeito segue a WorldPosition
+	  Scale       0.25 a 4    tamanho (padrão 1)
+	  Intensity   0 a 2       brilho/densidade (padrão 1)
+	  Duration    2 a 30 s    duração total; fases escalam junto (padrão 8)
+	  Color       Color3      cor base; gera paleta derivada
+	  Palette     tabela      sobrescreve chaves: Hot, Highlight, Electric,
+	                          Royal, Indigo, Violet, Haze, Void, Rock
+	  Quality     "Low"|"Medium"|"High"|"Ultra" (padrão = global)
+	  GroundAlign bool        rochas e onda no chão via raycast (padrão true)
+	  CameraShake bool        tremor de câmera (padrão true)
+	  ScreenFlash bool        clarão na tela (padrão true)
+	  Sounds      bool        usa CONFIG.Audio se houver IDs (padrão true)
+	  Seed        number      forma reproduzível
+	  AutoDestroy bool        destrói ao terminar (padrão true)
+	  Loop        bool        repete a linha do tempo (padrão false)
+	Métodos: Play, Pause, Resume, Stop, Destroy, SetScale, SetIntensity,
+	         SetPosition, GetState, GetPhase, OnFinished(callback)
+]]
+function CosmicEnergyAPI.Create(options)
+	return newEffect(options)
+end
+
+function CosmicEnergyAPI.SetQuality(name)
+	if QUALITY[name] then
+		globalQuality = name
+		return true
+	end
+	return false
+end
+
+function CosmicEnergyAPI.GetQuality()
+	return globalQuality
+end
+
+function CosmicEnergyAPI.DestroyAll()
+	for effect in pairs(allEffects) do
+		effect:Destroy()
+	end
+	flushBoltPool()
+end
+
+function CosmicEnergyAPI.GetStats()
+	local instances = 0
+	if runtimeFolder and runtimeFolder.Parent then
+		instances = #runtimeFolder:GetDescendants()
+	end
+	return {
+		ActiveEffects = countActive(),
+		Instances = instances,
+		BoltPartsInUse = boltPartsInUse,
+		BoltPartsPooled = #boltPool,
+		Rocks = rocksActive,
+	}
+end
+
+shared.CosmicEnergyAPI = CosmicEnergyAPI
+
+------------------------------------------------------------------
+-- LOOP GLOBAL (uma única conexão para todos os efeitos)
+------------------------------------------------------------------
+local frameTimes = {}
+
+RunService.RenderStepped:Connect(function(dt)
+	table.insert(frameTimes, dt)
+	if #frameTimes > 30 then
+		table.remove(frameTimes, 1)
+	end
+	local step = math.min(dt, 0.1)
+	for effect in pairs(activeEffects) do
+		local ok, err = pcall(effect._step, effect, step)
+		if not ok then
+			warn("[CosmicEnergyVFX] Erro no efeito " .. tostring(effect.id) .. ": " .. tostring(err))
+			effect:Destroy()
+		end
+	end
+end)
+
+------------------------------------------------------------------
+-- DEMONSTRAÇÃO: estado
+------------------------------------------------------------------
+local demo = {
+	scale = 1,
+	intensity = 1,
+	lastEffect = nil,
+	lastPosition = nil,
+	floor = nil,
+	darkMode = false,
+	savedLighting = nil,
+	bloom = false,
+}
+
+local ui = {}
+
+local function setStatus(text)
+	if ui.status then
+		ui.status.Text = text
+	end
+end
+
+local function getSpawnPosition()
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if root then
+		local look = root.CFrame.LookVector
+		local flat = Vector3.new(look.X, 0, look.Z)
+		flat = flat.Magnitude > 1e-3 and flat.Unit or Vector3.new(0, 0, -1)
+		return root.Position + flat * CONFIG.SpawnDistance + Vector3.new(0, CONFIG.SpawnHeight, 0)
+	end
+	local cam = Workspace.CurrentCamera
+	return cam.CFrame.Position + cam.CFrame.LookVector * CONFIG.SpawnDistance
+end
+
+local function spawnDemoEffect(position)
+	local fx = CosmicEnergyAPI.Create({
+		Position = position,
+		Scale = demo.scale,
+		Intensity = demo.intensity,
+		Quality = globalQuality,
+	})
+	if fx:Play() then
+		demo.lastEffect = fx
+		demo.lastPosition = position
+		setStatus("Efeito #" .. fx.id .. " ativado")
+	else
+		fx:Destroy()
+		setStatus("Limite de " .. CONFIG.MaxActiveEffects .. " efeitos atingido")
+	end
+end
+
+local function replayLast()
+	if demo.lastEffect and demo.lastEffect:GetState() ~= "Destroyed" then
+		demo.lastEffect:Destroy()
+	end
+	spawnDemoEffect(demo.lastPosition or getSpawnPosition())
+end
+
+local function togglePause()
+	local fx = demo.lastEffect
+	if not fx then
+		return
+	end
+	if fx:GetState() == "Paused" then
+		fx:Resume()
+		setStatus("Retomado")
+	else
+		fx:Pause()
+		setStatus("Pausado")
+	end
+end
+
+local function stopLast()
+	if demo.lastEffect then
+		demo.lastEffect:Stop()
+		setStatus("Parando (dissipando)")
+	end
+end
+
+local function cleanupAll()
+	CosmicEnergyAPI.DestroyAll()
+	demo.lastEffect = nil
+	setStatus("Tudo limpo")
+end
+
+local function toggleFloor()
+	if demo.floor then
+		demo.floor:Destroy()
+		demo.floor = nil
+		setStatus("Chão demo removido")
+		return
+	end
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local origin = root and root.Position or Workspace.CurrentCamera.CFrame.Position
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local exclude = { getRoot() }
+	if character then
+		table.insert(exclude, character)
+	end
+	params.FilterDescendantsInstances = exclude
+	local hit = Workspace:Raycast(origin, Vector3.new(0, -100, 0), params)
+	local groundY = hit and hit.Position.Y or (origin.Y - 3)
+	local floor = Instance.new("Part")
+	floor.Name = "CosmicEnergyDemoFloor"
+	floor.Anchored = true
+	floor.Size = Vector3.new(160, 1, 160)
+	floor.CFrame = CFrame.new(origin.X, groundY - 0.44, origin.Z)
+	floor.Color = Color3.fromRGB(14, 14, 22)
+	floor.Material = Enum.Material.SmoothPlastic
+	floor.TopSurface = Enum.SurfaceType.Smooth
+	floor.Parent = Workspace
+	demo.floor = floor
+	setStatus("Chão demo criado")
+end
+
+local function toggleDarkMode()
+	if demo.darkMode then
+		local saved = demo.savedLighting
+		if saved then
+			Lighting.ClockTime = saved.ClockTime
+			Lighting.Brightness = saved.Brightness
+			Lighting.Ambient = saved.Ambient
+			Lighting.OutdoorAmbient = saved.OutdoorAmbient
+			Lighting.ExposureCompensation = saved.ExposureCompensation
+		end
+		demo.darkMode = false
+		setStatus("Iluminação restaurada")
+	else
+		demo.savedLighting = {
+			ClockTime = Lighting.ClockTime,
+			Brightness = Lighting.Brightness,
+			Ambient = Lighting.Ambient,
+			OutdoorAmbient = Lighting.OutdoorAmbient,
+			ExposureCompensation = Lighting.ExposureCompensation,
+		}
+		Lighting.ClockTime = 0
+		Lighting.Brightness = 0.5
+		Lighting.Ambient = Color3.fromRGB(10, 10, 18)
+		Lighting.OutdoorAmbient = Color3.fromRGB(12, 12, 22)
+		Lighting.ExposureCompensation = -0.3
+		demo.darkMode = true
+		setStatus("Modo escuro ativo")
+	end
+end
+
+------------------------------------------------------------------
+-- INTERFACE DE DEMONSTRAÇÃO
+------------------------------------------------------------------
+local ACCENT = DEFAULT_PALETTE.Electric
+
+local function styleGui(obj, strokeColor)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = obj
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = strokeColor or ACCENT
+	stroke.Thickness = 1.5
+	stroke.Transparency = 0.3
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Parent = obj
+	return stroke
+end
+
+local function makeButton(parent, text, order, callback)
+	local button = Instance.new("TextButton")
+	button.Size = UDim2.new(1, 0, 0, 30)
+	button.LayoutOrder = order
+	button.BackgroundColor3 = Color3.fromRGB(20, 22, 40)
+	button.AutoButtonColor = true
+	button.Text = text
+	button.TextColor3 = Color3.fromRGB(225, 235, 255)
+	button.Font = Enum.Font.GothamBold
+	button.TextSize = 14
+	button.Parent = parent
+	styleGui(button)
+	button.MouseButton1Click:Connect(callback)
+	return button
+end
+
+local function makeSlider(parent, label, min, max, default, order, onChange)
+	local holder = Instance.new("Frame")
+	holder.Size = UDim2.new(1, 0, 0, 44)
+	holder.BackgroundTransparency = 1
+	holder.LayoutOrder = order
+	holder.Parent = parent
+
+	local text = Instance.new("TextLabel")
+	text.Size = UDim2.new(1, 0, 0, 18)
+	text.BackgroundTransparency = 1
+	text.TextColor3 = Color3.fromRGB(200, 215, 255)
+	text.Font = Enum.Font.GothamMedium
+	text.TextSize = 13
+	text.TextXAlignment = Enum.TextXAlignment.Left
+	text.Parent = holder
+
+	local bar = Instance.new("Frame")
+	bar.Size = UDim2.new(1, -16, 0, 8)
+	bar.Position = UDim2.new(0, 8, 0, 28)
+	bar.BackgroundColor3 = Color3.fromRGB(40, 42, 70)
+	bar.BorderSizePixel = 0
+	bar.Active = true
+	bar.Parent = holder
+	local barCorner = Instance.new("UICorner")
+	barCorner.CornerRadius = UDim.new(1, 0)
+	barCorner.Parent = bar
+
+	local fill = Instance.new("Frame")
+	fill.BackgroundColor3 = ACCENT
+	fill.BorderSizePixel = 0
+	fill.Parent = bar
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(1, 0)
+	fillCorner.Parent = fill
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.fromOffset(16, 16)
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.BackgroundColor3 = DEFAULT_PALETTE.Hot
+	knob.BorderSizePixel = 0
+	knob.Parent = bar
+	local knobCorner = Instance.new("UICorner")
+	knobCorner.CornerRadius = UDim.new(1, 0)
+	knobCorner.Parent = knob
+
+	local function set(value)
+		value = math.clamp(value, min, max)
+		local alpha = (value - min) / (max - min)
+		fill.Size = UDim2.fromScale(alpha, 1)
+		knob.Position = UDim2.new(alpha, 0, 0.5, 0)
+		text.Text = string.format("%s: %.2f", label, value)
+		onChange(value)
+	end
+
+	local dragging = false
+	local function fromX(x)
+		local width = math.max(bar.AbsoluteSize.X, 1)
+		local alpha = clamp01((x - bar.AbsolutePosition.X) / width)
+		set(min + alpha * (max - min))
+	end
+
+	bar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			fromX(input.Position.X)
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			fromX(input.Position.X)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	set(default)
+end
+
+local function buildUI()
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "CosmicEnergyDemoUI"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.Parent = player:WaitForChild("PlayerGui")
+
+	local flash = Instance.new("Frame")
+	flash.Name = "Flash"
+	flash.Size = UDim2.fromScale(1, 1)
+	flash.BackgroundColor3 = Color3.new(1, 1, 1)
+	flash.BackgroundTransparency = 1
+	flash.BorderSizePixel = 0
+	flash.ZIndex = 10
+	flash.Active = false
+	flash.Parent = gui
+	flashFrame = flash
+
+	local panel = Instance.new("Frame")
+	panel.Name = "Panel"
+	panel.Size = UDim2.fromOffset(220, 0)
+	panel.AutomaticSize = Enum.AutomaticSize.Y
+	panel.Position = UDim2.new(0, 16, 0.5, 0)
+	panel.AnchorPoint = Vector2.new(0, 0.5)
+	panel.BackgroundColor3 = Color3.fromRGB(10, 10, 22)
+	panel.BackgroundTransparency = 0.15
+	panel.Parent = gui
+	styleGui(panel, DEFAULT_PALETTE.Violet)
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingTop = UDim.new(0, 10)
+	padding.PaddingBottom = UDim.new(0, 10)
+	padding.PaddingLeft = UDim.new(0, 10)
+	padding.PaddingRight = UDim.new(0, 10)
+	padding.Parent = panel
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 6)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, 0, 0, 22)
+	title.BackgroundTransparency = 1
+	title.Text = "TEARDROP · COSMIC VFX"
+	title.TextColor3 = DEFAULT_PALETTE.Highlight
+	title.Font = Enum.Font.GothamBlack
+	title.TextSize = 15
+	title.LayoutOrder = 0
+	title.Parent = panel
+
+	makeButton(panel, "Ativar [G]", 1, function()
+		spawnDemoEffect(getSpawnPosition())
+	end)
+	makeButton(panel, "Repetir", 2, replayLast)
+	makeButton(panel, "Pausar / Retomar", 3, togglePause)
+	makeButton(panel, "Parar", 4, stopLast)
+	makeButton(panel, "Limpar tudo", 5, cleanupAll)
+
+	local qualityButton
+	qualityButton = makeButton(panel, "Qualidade: " .. globalQuality, 6, function()
+		local index = table.find(QUALITY_ORDER, globalQuality) or 3
+		local nextName = QUALITY_ORDER[index % #QUALITY_ORDER + 1]
+		CosmicEnergyAPI.SetQuality(nextName)
+		qualityButton.Text = "Qualidade: " .. nextName
+		setStatus("Qualidade " .. nextName .. " (vale para novos efeitos)")
+	end)
+
+	makeSlider(panel, "Escala", 0.25, 4, demo.scale, 7, function(value)
+		demo.scale = value
+		if demo.lastEffect then
+			demo.lastEffect:SetScale(value)
+		end
+	end)
+	makeSlider(panel, "Intensidade", 0, 2, demo.intensity, 8, function(value)
+		demo.intensity = value
+		if demo.lastEffect then
+			demo.lastEffect:SetIntensity(value)
+		end
+	end)
+
+	makeButton(panel, "Chão demo", 9, toggleFloor)
+	makeButton(panel, "Modo escuro", 10, toggleDarkMode)
+	local bloomButton
+	bloomButton = makeButton(panel, "Bloom: Off", 11, function()
+		demo.bloom = not demo.bloom
+		setBloomEnabled(demo.bloom)
+		bloomButton.Text = demo.bloom and "Bloom: On" or "Bloom: Off"
+	end)
+
+	local status = Instance.new("TextLabel")
+	status.Size = UDim2.new(1, 0, 0, 18)
+	status.BackgroundTransparency = 1
+	status.Text = "Pronto"
+	status.TextColor3 = DEFAULT_PALETTE.Highlight
+	status.Font = Enum.Font.GothamMedium
+	status.TextSize = 12
+	status.TextWrapped = true
+	status.LayoutOrder = 12
+	status.Parent = panel
+	ui.status = status
+
+	local diag = Instance.new("TextLabel")
+	diag.Size = UDim2.new(1, 0, 0, 84)
+	diag.BackgroundTransparency = 1
+	diag.TextColor3 = Color3.fromRGB(170, 180, 210)
+	diag.Font = Enum.Font.Code
+	diag.TextSize = 12
+	diag.TextXAlignment = Enum.TextXAlignment.Left
+	diag.TextYAlignment = Enum.TextYAlignment.Top
+	diag.LayoutOrder = 13
+	diag.Parent = panel
+	ui.diag = diag
+end
+
+local function updateDiagnostics()
+	if not ui.diag then
+		return
+	end
+	local stats = CosmicEnergyAPI.GetStats()
+	local sum = 0
+	for _, value in ipairs(frameTimes) do
+		sum += value
+	end
+	local fps = #frameTimes > 0 and (#frameTimes / sum) or 0
+	local phase = "-"
+	if demo.lastEffect and demo.lastEffect.built then
+		phase = demo.lastEffect:GetPhase()
+	end
+	ui.diag.Text = string.format(
+		"FPS: %d\nEfeitos ativos: %d/%d\nInstâncias: %d\nRaios (uso/pool): %d/%d\nRochas: %d\nFase: %s",
+		math.floor(fps + 0.5), stats.ActiveEffects, CONFIG.MaxActiveEffects, stats.Instances,
+		stats.BoltPartsInUse, stats.BoltPartsPooled, stats.Rocks, phase
+	)
+end
+
+------------------------------------------------------------------
+-- INICIALIZAÇÃO
+------------------------------------------------------------------
+buildUI()
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then
+		return
+	end
+	if input.KeyCode == CONFIG.SpawnKey then
+		spawnDemoEffect(getSpawnPosition())
+	end
+end)
+
+task.spawn(function()
+	while true do
+		updateDiagnostics()
+		task.wait(0.5)
+	end
+end)
